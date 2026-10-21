@@ -25,6 +25,7 @@ public class App extends Application {
         // Cargar vista de clientes
         FXMLLoader loaderClientes = new FXMLLoader(getClass().getResource("/com/tecnoasistencia/vistas/cliente-view.fxml"));
         Parent vistaClientes = loaderClientes.load();
+        com.tecnoasistencia.controlador.ClienteController clienteController = loaderClientes.getController();
         Tab tabClientes = new Tab("Clientes", vistaClientes);
 
         // Cargar vista de citas técnicas
@@ -35,10 +36,12 @@ public class App extends Application {
 
         panel.getTabs().addAll(tabClientes, tabCitas);
 
-        // RF09: Sincronización automática entre pestañas al seleccionar "Citas técnicas"
+        // RF09: Sincronización automática multihilo entre pestañas al alternar selección
         panel.getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
             if (newTab == tabCitas && citaController != null) {
                 citaController.cargarDatos();
+            } else if (newTab == tabClientes && clienteController != null) {
+                clienteController.cargarClientes();
             }
         });
 
