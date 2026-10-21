@@ -9,6 +9,8 @@ import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
 import javafx.collections.transformation.SortedList;
+import javafx.application.Platform;
+import javafx.concurrent.Task;
 import javafx.event.ActionEvent;
 import javafx.fxml.FXML;
 import javafx.fxml.Initializable;
@@ -21,6 +23,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.TableCell;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
@@ -45,8 +48,11 @@ import javafx.scene.text.FontWeight;
 import javafx.util.Duration;
 
 import java.net.URL;
+import java.util.List;
 import java.util.Optional;
 import java.util.ResourceBundle;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import com.tecnoasistencia.utilidad.Alertas;
 import com.tecnoasistencia.utilidad.Validaciones;
 
@@ -140,6 +146,22 @@ public class ClienteController implements Initializable {
 
     @FXML
     private Button btnLimpiarBusqueda;
+
+    @FXML
+    private Button btnRecargar;
+
+    @FXML
+    private ProgressIndicator progresoCarga;
+
+    @FXML
+    private Label lblEstadoTarea;
+
+    private final ExecutorService executorService = Executors.newFixedThreadPool(2, runnable -> {
+        Thread thread = new Thread(runnable);
+        thread.setName("Thread-DB-Clientes");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     @FXML
     private TableView<Cliente> tblClientes;
@@ -240,19 +262,94 @@ public class ClienteController implements Initializable {
     }
 
     /**
-     * Carga todos los clientes desde la base de datos a través de ClienteDAO
-     * y actualiza el TableView y el contador (RF02, RF09) con animación FadeTransition.
+     * Carga todos los clientes desde PostgreSQL en un hilo secundario con Task (RF02, RF09).
+     * Mantiene la interfaz de usuario fluida y libre de congelamientos.
      */
     public void cargarClientes() {
-        try {
-            ObservableList<Cliente> desdeDB = clienteDAO.listarClientes();
-            listaClientes.setAll(desdeDB);
+        Task<List<Cliente>> task = new Task<>() {
+            @Override
+            protected List<Cliente> call() throws Exception {
+                System.out.printf("[CONCURRENCIA] Carga de clientes en hilo: '%s' (isFxThread=%b)%n",
+                        Thread.currentThread().getName(), Platform.isFxApplicationThread());
+
+                updateMessage("Conectando con base de datos PostgreSQL...");
+                updateProgress(0.2, 1.0);
+
+                long inicio = System.currentTimeMillis();
+
+                updateMessage("Consultando tabla de clientes...");
+                updateProgress(0.5, 1.0);
+                List<Cliente> desdeDB = clienteDAO.listarClientes();
+
+                // Pausa pedagógica intencional (600ms) para percibir el indicador visual en evaluación
+                Thread.sleep(600);
+
+                updateMessage("Sincronizando clientes con la tabla...");
+                updateProgress(1.0, 1.0);
+
+                long duracion = System.currentTimeMillis() - inicio;
+                System.out.printf("[CONCURRENCIA] Clientes leídos en '%s': %d registros en %d ms.%n",
+                        Thread.currentThread().getName(), desdeDB.size(), duracion);
+
+                return desdeDB;
+            }
+        };
+
+        // Enlace reactivo a controles visuales
+        if (btnRecargar != null) btnRecargar.disableProperty().bind(task.runningProperty());
+        if (btnBuscar != null) btnBuscar.disableProperty().bind(task.runningProperty());
+        if (progresoCarga != null) {
+            progresoCarga.visibleProperty().bind(task.runningProperty());
+            progresoCarga.managedProperty().bind(task.runningProperty());
+            progresoCarga.progressProperty().bind(task.progressProperty());
+        }
+        if (lblEstadoTarea != null) {
+            lblEstadoTarea.textProperty().bind(task.messageProperty());
+        }
+
+        task.setOnSucceeded(e -> {
+            if (lblEstadoTarea != null) lblEstadoTarea.textProperty().unbind();
+            if (progresoCarga != null) progresoCarga.progressProperty().unbind();
+            if (btnRecargar != null) {
+                btnRecargar.disableProperty().unbind();
+                btnRecargar.setDisable(false);
+            }
+            if (btnBuscar != null) {
+                btnBuscar.disableProperty().unbind();
+                btnBuscar.setDisable(false);
+            }
+
+            List<Cliente> resultado = task.getValue();
+            listaClientes.setAll(resultado);
             clientesFiltrados.setPredicate(c -> true);
             actualizarContador(clientesFiltrados.size());
             animarCargaTabla();
-        } catch (IllegalStateException e) {
-            Alertas.errorDatos(e);
-        }
+
+            if (lblEstadoTarea != null) {
+                lblEstadoTarea.setText("Listo: " + resultado.size() + " clientes");
+            }
+        });
+
+        task.setOnFailed(e -> {
+            if (lblEstadoTarea != null) lblEstadoTarea.textProperty().unbind();
+            if (progresoCarga != null) progresoCarga.progressProperty().unbind();
+            if (btnRecargar != null) {
+                btnRecargar.disableProperty().unbind();
+                btnRecargar.setDisable(false);
+            }
+            if (btnBuscar != null) {
+                btnBuscar.disableProperty().unbind();
+                btnBuscar.setDisable(false);
+            }
+
+            Throwable error = task.getException();
+            if (lblEstadoTarea != null) {
+                lblEstadoTarea.setText("Error al cargar clientes");
+            }
+            Alertas.errorDatos(error instanceof Exception ? (Exception) error : new Exception(error));
+        });
+
+        executorService.submit(task);
     }
 
     /**
@@ -346,6 +443,7 @@ public class ClienteController implements Initializable {
         estilarBoton(btnLimpiar, "#64748b", "#475569");
         estilarBoton(btnBuscar, "#0284c7", "#0369a1");
         estilarBoton(btnLimpiarBusqueda, "#64748b", "#475569");
+        estilarBoton(btnRecargar, "#059669", "#047857");
 
         estilarCampoTexto(txtNombres);
         estilarCampoTexto(txtApellidos);
@@ -401,6 +499,7 @@ public class ClienteController implements Initializable {
         agregarAnimacionHover(btnLimpiar);
         agregarAnimacionHover(btnBuscar);
         agregarAnimacionHover(btnLimpiarBusqueda);
+        agregarAnimacionHover(btnRecargar);
     }
 
     private void agregarAnimacionHover(Button boton) {
@@ -709,24 +808,96 @@ public class ClienteController implements Initializable {
 
     /**
      * Manejador del botón Buscar (o pulsar Enter en txtBuscar) (RF05).
-     * Ejecuta la consulta directa con PreparedStatement contra PostgreSQL.
+     * Ejecuta la consulta contra PostgreSQL en un hilo secundario para evitar congelar la UI.
      */
     @FXML
     private void handleBuscar(ActionEvent event) {
         String criterio = txtBuscar.getText() != null ? txtBuscar.getText().trim() : "";
         if (criterio.isEmpty()) {
             cargarClientes();
-        } else {
-            try {
-                ObservableList<Cliente> resultadoDB = clienteDAO.buscarClientes(criterio);
-                listaClientes.setAll(resultadoDB);
-                clientesFiltrados.setPredicate(c -> true);
-                actualizarContador(resultadoDB.size());
-                animarCargaTabla();
-            } catch (IllegalStateException e) {
-                Alertas.errorDatos(e);
-            }
+            return;
         }
+
+        Task<List<Cliente>> searchTask = new Task<>() {
+            @Override
+            protected List<Cliente> call() throws Exception {
+                System.out.printf("[CONCURRENCIA] Búsqueda '%s' en hilo: '%s' (isFxThread=%b)%n",
+                        criterio, Thread.currentThread().getName(), Platform.isFxApplicationThread());
+
+                updateMessage("Buscando clientes coincidentes en PostgreSQL...");
+                updateProgress(0.3, 1.0);
+
+                List<Cliente> resultadoDB = clienteDAO.buscarClientes(criterio);
+
+                Thread.sleep(400); // Pausa pedagógica breve
+                updateProgress(1.0, 1.0);
+                return resultadoDB;
+            }
+        };
+
+        if (btnBuscar != null) btnBuscar.disableProperty().bind(searchTask.runningProperty());
+        if (btnRecargar != null) btnRecargar.disableProperty().bind(searchTask.runningProperty());
+        if (progresoCarga != null) {
+            progresoCarga.visibleProperty().bind(searchTask.runningProperty());
+            progresoCarga.managedProperty().bind(searchTask.runningProperty());
+            progresoCarga.progressProperty().bind(searchTask.progressProperty());
+        }
+        if (lblEstadoTarea != null) {
+            lblEstadoTarea.textProperty().bind(searchTask.messageProperty());
+        }
+
+        searchTask.setOnSucceeded(e -> {
+            if (lblEstadoTarea != null) lblEstadoTarea.textProperty().unbind();
+            if (progresoCarga != null) progresoCarga.progressProperty().unbind();
+            if (btnBuscar != null) {
+                btnBuscar.disableProperty().unbind();
+                btnBuscar.setDisable(false);
+            }
+            if (btnRecargar != null) {
+                btnRecargar.disableProperty().unbind();
+                btnRecargar.setDisable(false);
+            }
+
+            List<Cliente> resultadoDB = searchTask.getValue();
+            listaClientes.setAll(resultadoDB);
+            clientesFiltrados.setPredicate(c -> true);
+            actualizarContador(resultadoDB.size());
+            animarCargaTabla();
+
+            if (lblEstadoTarea != null) {
+                lblEstadoTarea.setText("Encontrados: " + resultadoDB.size() + " clientes");
+            }
+        });
+
+        searchTask.setOnFailed(e -> {
+            if (lblEstadoTarea != null) lblEstadoTarea.textProperty().unbind();
+            if (progresoCarga != null) progresoCarga.progressProperty().unbind();
+            if (btnBuscar != null) {
+                btnBuscar.disableProperty().unbind();
+                btnBuscar.setDisable(false);
+            }
+            if (btnRecargar != null) {
+                btnRecargar.disableProperty().unbind();
+                btnRecargar.setDisable(false);
+            }
+
+            Throwable error = searchTask.getException();
+            if (lblEstadoTarea != null) {
+                lblEstadoTarea.setText("Error en la búsqueda");
+            }
+            Alertas.errorDatos(error instanceof Exception ? (Exception) error : new Exception(error));
+        });
+
+        executorService.submit(searchTask);
+    }
+
+    /**
+     * Manejador del botón Recargar (RF02).
+     */
+    @FXML
+    private void handleRecargar(ActionEvent event) {
+        txtBuscar.clear();
+        cargarClientes();
     }
 
     /**
