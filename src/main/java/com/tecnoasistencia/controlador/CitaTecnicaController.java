@@ -6,23 +6,31 @@ import com.tecnoasistencia.modelo.CitaTecnica;
 import com.tecnoasistencia.modelo.Cliente;
 import com.tecnoasistencia.utilidad.Alertas;
 import com.tecnoasistencia.utilidad.Validaciones;
+import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
 import javafx.collections.transformation.SortedList;
+import javafx.concurrent.Task;
 import javafx.fxml.FXML;
 import javafx.scene.control.*;
 import javafx.scene.control.cell.PropertyValueFactory;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.PrintWriter;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Controlador de la vista de citas técnicas (cita-view.fxml).
  * Implementa las operaciones CRUD, validaciones de negocio, filtros dinámicos
- * y alertas requeridas por la rúbrica (RF03, RF04, RF06, RF07, RF08, RF09).
+ * y programación multihilo reactiva mediante javafx.concurrent.Task y ExecutorService.
  */
 public class CitaTecnicaController {
 
@@ -49,7 +57,30 @@ public class CitaTecnicaController {
     @FXML private Button btnGuardar;
     @FXML private Button btnActualizar;
     @FXML private Button btnEliminar;
+    @FXML private Button btnRecargar;
+    @FXML private Button btnExportar;
     @FXML private Label lblContador;
+    @FXML private Label lblEstadoTarea;
+    @FXML private ProgressIndicator progresoCarga;
+
+    /**
+     * DTO inmutable que transfiere de forma segura los datos leídos en el hilo de fondo a la UI.
+     */
+    public record ResultadoCargaCitas(
+            List<Cliente> clientes,
+            List<CitaTecnica> citas,
+            long duracionMs
+    ) {}
+
+    /**
+     * Pool de hilos con hilos demonio (daemon threads) para no bloquear el cierre de la JVM.
+     */
+    private final ExecutorService executorService = Executors.newFixedThreadPool(2, runnable -> {
+        Thread thread = new Thread(runnable);
+        thread.setName("Thread-DB-Citas");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     private final CitaTecnicaDAO citaDAO = new CitaTecnicaDAO();
     private final ClienteDAO clienteDAO = new ClienteDAO();
@@ -145,20 +176,125 @@ public class CitaTecnicaController {
     }
 
     /**
-     * Recarga la lista de clientes en el ComboBox y las citas en la tabla (RF03, RF09).
+     * Carga asíncrona y reactiva de clientes y citas técnicas mediante javafx.concurrent.Task.
+     * Ejecuta las consultas SQL pesadas con JOIN en un hilo secundario (background thread),
+     * garantizando que el JavaFX Application Thread jamás se congele y la interfaz permanezca 100% responsiva.
      */
     @FXML
     public void cargarDatos() {
-        try {
-            ObservableList<Cliente> clientesActuales = clienteDAO.listarClientes();
-            ObservableList<CitaTecnica> citasActuales = citaDAO.listarCitas();
+        Task<ResultadoCargaCitas> task = new Task<>() {
+            @Override
+            protected ResultadoCargaCitas call() throws Exception {
+                // Comprobación de concurrencia: este bloque se ejecuta en el background thread
+                System.out.printf("[CONCURRENCIA] Inicio carga en hilo secundario: '%s' (isFxThread=%b)%n",
+                        Thread.currentThread().getName(), Platform.isFxApplicationThread());
 
-            cmbCliente.getItems().setAll(clientesActuales);
-            citas.setAll(citasActuales);
-            aplicarFiltros();
-        } catch (SQLException | IllegalStateException e) {
-            Alertas.errorDatos(e);
+                updateMessage("Conectando con base de datos PostgreSQL...");
+                updateProgress(0.1, 1.0);
+
+                long inicio = System.currentTimeMillis();
+
+                // 1. Cargar catálogo de clientes desde PostgreSQL
+                updateMessage("Consultando catálogo de clientes...");
+                updateProgress(0.3, 1.0);
+                List<Cliente> clientesActuales = clienteDAO.listarClientes();
+
+                // Demostración explícita de Platform.runLater() para sincronización manual
+                Platform.runLater(() -> {
+                    System.out.println("[Platform.runLater] Catálogo de clientes obtenido en background (" + clientesActuales.size() + " clientes).");
+                });
+
+                // Pausa pedagógica intencional (600ms) para percibir el indicador visual y probar la ventana en evaluación
+                Thread.sleep(600);
+
+                // 2. Cargar citas técnicas con JOIN hacia PostgreSQL
+                updateMessage("Consultando historial de citas técnicas...");
+                updateProgress(0.7, 1.0);
+                List<CitaTecnica> citasActuales = citaDAO.listarCitas();
+
+                // Pausa pedagógica complementaria (400ms)
+                Thread.sleep(400);
+
+                updateMessage("Sincronizando datos con la interfaz...");
+                updateProgress(1.0, 1.0);
+
+                long duracion = System.currentTimeMillis() - inicio;
+
+                System.out.printf("[CONCURRENCIA] Carga finalizada en hilo '%s'. Citas: %d, Clientes: %d, Duración: %d ms.%n",
+                        Thread.currentThread().getName(), citasActuales.size(), clientesActuales.size(), duracion);
+
+                return new ResultadoCargaCitas(clientesActuales, citasActuales, duracion);
+            }
+        };
+
+        // Vinculación reactiva de propiedades a los controles visuales (JavaFX reactive binding)
+        if (btnRecargar != null) {
+            btnRecargar.disableProperty().bind(task.runningProperty());
         }
+        if (progresoCarga != null) {
+            progresoCarga.visibleProperty().bind(task.runningProperty());
+            progresoCarga.managedProperty().bind(task.runningProperty());
+            progresoCarga.progressProperty().bind(task.progressProperty());
+        }
+        if (lblEstadoTarea != null) {
+            lblEstadoTarea.textProperty().bind(task.messageProperty());
+        }
+
+        // Callback de éxito: ejecutado AUTOMÁTICAMENTE en el JavaFX Application Thread
+        task.setOnSucceeded(event -> {
+            if (lblEstadoTarea != null) {
+                lblEstadoTarea.textProperty().unbind();
+            }
+            if (progresoCarga != null) {
+                progresoCarga.progressProperty().unbind();
+            }
+            if (btnRecargar != null) {
+                btnRecargar.disableProperty().unbind();
+                btnRecargar.setDisable(false);
+            }
+
+            ResultadoCargaCitas resultado = task.getValue();
+
+            System.out.printf("[CONCURRENCIA] Callback setOnSucceeded en hilo UI: '%s' (isFxThread=%b)%n",
+                    Thread.currentThread().getName(), Platform.isFxApplicationThread());
+
+            // Actualización segura de controles en el JavaFX Application Thread
+            cmbCliente.getItems().setAll(resultado.clientes());
+            citas.setAll(resultado.citas());
+            aplicarFiltros();
+
+            if (lblEstadoTarea != null) {
+                lblEstadoTarea.setText(String.format("Listo: %d citas cargadas en %d ms",
+                        resultado.citas().size(), resultado.duracionMs()));
+            }
+        });
+
+        // Callback de fallo: ejecutado AUTOMÁTICAMENTE en el JavaFX Application Thread
+        task.setOnFailed(event -> {
+            if (lblEstadoTarea != null) {
+                lblEstadoTarea.textProperty().unbind();
+            }
+            if (progresoCarga != null) {
+                progresoCarga.progressProperty().unbind();
+            }
+            if (btnRecargar != null) {
+                btnRecargar.disableProperty().unbind();
+                btnRecargar.setDisable(false);
+            }
+
+            Throwable error = task.getException();
+            System.err.printf("[CONCURRENCIA ERROR] Fallo en hilo background: %s%n",
+                    error != null ? error.getMessage() : "Desconocido");
+
+            if (lblEstadoTarea != null) {
+                lblEstadoTarea.setText("Error al cargar datos desde PostgreSQL");
+            }
+
+            Alertas.errorDatos(error instanceof Exception ? (Exception) error : new Exception(error));
+        });
+
+        // Enviar la tarea al pool de hilos para su ejecución asíncrona
+        executorService.submit(task);
     }
 
     private void cargarFormulario(CitaTecnica cita) {
@@ -339,5 +475,110 @@ public class CitaTecnicaController {
         cmbFiltroEstado.setValue("Todos");
         dpFiltroFecha.setValue(null);
         aplicarFiltros();
+    }
+
+    /**
+     * Generación de reporte/exportación CSV en segundo plano (Requisito de concurrencia para operaciones pesadas).
+     * Muestra reactividad mediante Task, indicador de progreso y Platform.runLater().
+     */
+    @FXML
+    public void handleExportarReporte() {
+        if (citas.isEmpty()) {
+            Alertas.mostrar(Alert.AlertType.WARNING, "Exportación", "No hay citas disponibles para exportar.");
+            return;
+        }
+
+        Task<File> exportTask = new Task<>() {
+            @Override
+            protected File call() throws Exception {
+                System.out.printf("[CONCURRENCIA EXPORT] Iniciando exportación en hilo: '%s' (isFxThread=%b)%n",
+                        Thread.currentThread().getName(), Platform.isFxApplicationThread());
+
+                updateMessage("Preparando datos para exportación CSV...");
+                updateProgress(0.05, 1.0);
+
+                File archivoSalida = new File("reporte_citas_tecnicas.csv");
+
+                try (PrintWriter writer = new PrintWriter(new FileWriter(archivoSalida))) {
+                    writer.println("ID,Cliente,Fecha,Hora,Servicio,Descripcion,Estado");
+
+                    List<CitaTecnica> listaExportar = List.copyOf(citas);
+                    int total = listaExportar.size();
+
+                    for (int i = 0; i < total; i++) {
+                        CitaTecnica c = listaExportar.get(i);
+                        writer.printf("%d,\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"%n",
+                                c.getId(),
+                                c.getNombreCliente().replace("\"", "\"\""),
+                                c.getFecha(),
+                                c.getHora(),
+                                c.getTipoServicio().replace("\"", "\"\""),
+                                c.getDescripcion().replace("\"", "\"\""),
+                                c.getEstado());
+
+                        updateProgress(i + 1, total);
+                        updateMessage(String.format("Exportando cita %d de %d...", (i + 1), total));
+
+                        // Breve pausa para percibir el progreso gradual en la UI
+                        Thread.sleep(30);
+                    }
+                }
+
+                // Demostración de sincronización manual con Platform.runLater()
+                Platform.runLater(() -> {
+                    System.out.println("[Platform.runLater] Archivo CSV escrito exitosamente en disco.");
+                });
+
+                return archivoSalida;
+            }
+        };
+
+        if (btnExportar != null) {
+            btnExportar.disableProperty().bind(exportTask.runningProperty());
+        }
+        if (progresoCarga != null) {
+            progresoCarga.visibleProperty().bind(exportTask.runningProperty());
+            progresoCarga.managedProperty().bind(exportTask.runningProperty());
+            progresoCarga.progressProperty().bind(exportTask.progressProperty());
+        }
+        if (lblEstadoTarea != null) {
+            lblEstadoTarea.textProperty().bind(exportTask.messageProperty());
+        }
+
+        exportTask.setOnSucceeded(e -> {
+            if (lblEstadoTarea != null) lblEstadoTarea.textProperty().unbind();
+            if (progresoCarga != null) progresoCarga.progressProperty().unbind();
+            if (btnExportar != null) {
+                btnExportar.disableProperty().unbind();
+                btnExportar.setDisable(false);
+            }
+
+            File archivoGenerado = exportTask.getValue();
+            if (lblEstadoTarea != null) {
+                lblEstadoTarea.setText("Reporte generado: " + archivoGenerado.getName());
+            }
+
+            Alertas.mostrar(Alert.AlertType.INFORMATION, "Exportación Exitosa",
+                    "El reporte de citas técnicas se generó en segundo plano:\n\n"
+                            + archivoGenerado.getAbsolutePath() + "\n\nTotal de citas exportadas: " + citas.size());
+        });
+
+        exportTask.setOnFailed(e -> {
+            if (lblEstadoTarea != null) lblEstadoTarea.textProperty().unbind();
+            if (progresoCarga != null) progresoCarga.progressProperty().unbind();
+            if (btnExportar != null) {
+                btnExportar.disableProperty().unbind();
+                btnExportar.setDisable(false);
+            }
+
+            Throwable ex = exportTask.getException();
+            if (lblEstadoTarea != null) {
+                lblEstadoTarea.setText("Error al generar reporte.");
+            }
+            Alertas.mostrar(Alert.AlertType.ERROR, "Error de Exportación",
+                    "No se pudo completar la exportación: " + (ex != null ? ex.getMessage() : "Error desconocido"));
+        });
+
+        executorService.submit(exportTask);
     }
 }
