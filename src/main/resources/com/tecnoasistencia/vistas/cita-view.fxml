@@ -71,7 +71,8 @@
                     <Label text="Fecha:"/>
                     <DatePicker fx:id="dpFiltroFecha" prefWidth="145"/>
                     <Button text="Limpiar filtros" onAction="#handleLimpiarFiltros"/>
-                    <Button text="Recargar" onAction="#cargarDatos"/>
+                    <Button fx:id="btnRecargar" text="Recargar" onAction="#cargarDatos" style="-fx-background-color: #0284c7; -fx-text-fill: white; -fx-cursor: hand;"/>
+                    <Button fx:id="btnExportar" text="Exportar CSV" onAction="#handleExportarReporte" style="-fx-background-color: #059669; -fx-text-fill: white; -fx-cursor: hand;"/>
                 </FlowPane>
                 <Separator/>
                 <TableView fx:id="tblCitas" VBox.vgrow="ALWAYS">
@@ -86,7 +87,12 @@
                     </columns>
                     <columnResizePolicy><TableView fx:constant="CONSTRAINED_RESIZE_POLICY"/></columnResizePolicy>
                 </TableView>
-                <Label fx:id="lblContador" text="Citas mostradas: 0 de 0" style="-fx-text-fill: #64748b; -fx-font-weight: bold;"/>
+                <HBox alignment="CENTER_LEFT" spacing="12">
+                    <Label fx:id="lblContador" text="Citas mostradas: 0 de 0" style="-fx-text-fill: #64748b; -fx-font-weight: bold;"/>
+                    <Region HBox.hgrow="ALWAYS"/>
+                    <ProgressIndicator fx:id="progresoCarga" prefWidth="20" prefHeight="20" visible="false" managed="false"/>
+                    <Label fx:id="lblEstadoTarea" text="Listo" style="-fx-text-fill: #0284c7; -fx-font-weight: bold; -fx-font-size: 12;"/>
+                </HBox>
             </VBox>
         </HBox>
     </center>

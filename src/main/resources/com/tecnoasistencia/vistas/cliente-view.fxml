@@ -4,6 +4,7 @@
 <?import javafx.scene.control.Button?>
 <?import javafx.scene.control.CheckBox?>
 <?import javafx.scene.control.Label?>
+<?import javafx.scene.control.ProgressIndicator?>
 <?import javafx.scene.control.Separator?>
 <?import javafx.scene.control.TableColumn?>
 <?import javafx.scene.control.TableView?>
@@ -12,6 +13,7 @@
 <?import javafx.scene.layout.ColumnConstraints?>
 <?import javafx.scene.layout.GridPane?>
 <?import javafx.scene.layout.HBox?>
+<?import javafx.scene.layout.Pane?>
 <?import javafx.scene.layout.Priority?>
 <?import javafx.scene.layout.RowConstraints?>
 <?import javafx.scene.layout.VBox?>
@@ -139,6 +141,7 @@
                                            HBox.hgrow="ALWAYS" onAction="#handleBuscar"/>
                                 <Button fx:id="btnBuscar" text="Buscar" onAction="#handleBuscar"/>
                                 <Button fx:id="btnLimpiarBusqueda" text="Restablecer" onAction="#handleLimpiarBusqueda"/>
+                                <Button fx:id="btnRecargar" text="Recargar" onAction="#handleRecargar"/>
                             </children>
                         </HBox>
 
@@ -159,10 +162,13 @@
                             </columnResizePolicy>
                         </TableView>
 
-                        <!-- Barra de Estado Inferior -->
-                        <HBox alignment="CENTER_LEFT" spacing="10.0">
+                        <!-- Barra de Estado Inferior con Concurrencia -->
+                        <HBox alignment="CENTER_LEFT" spacing="12.0">
                             <children>
                                 <Label fx:id="lblContador" text="Total de clientes: 0"/>
+                                <Pane HBox.hgrow="ALWAYS"/>
+                                <ProgressIndicator fx:id="progresoCarga" prefWidth="20.0" prefHeight="20.0" visible="false" managed="false"/>
+                                <Label fx:id="lblEstadoTarea" text="Listo" style="-fx-text-fill: #0284c7; -fx-font-weight: bold;"/>
                             </children>
                         </HBox>
                     </children>
